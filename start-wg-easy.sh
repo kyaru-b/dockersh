@@ -1,30 +1,56 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "Запуск wg-easy v15 (NL, IPv6 ULA)..."
+echo "🚀 Запуск wg-easy v15 (NL, IPv6 ULA)..."
 
+# ------------------------------
 # 1. Удаляем старый контейнер
+# ------------------------------
 docker rm -f wg-easy 2>/dev/null || true
 
-# 2. Удаляем старую сеть (если была с subnet)
+# ------------------------------
+# 2. Удаляем старую сеть wg
+# ------------------------------
 docker network rm wg 2>/dev/null || true
 
-# 3. Создаём сеть БЕЗ --subnet (чтобы --ip работал)
+# ------------------------------
+# 3. Создаём сеть Docker с IPv6
+# ------------------------------
 docker network create \
   -d bridge \
   --ipv6 \
   --opt com.docker.network.bridge.name=wg \
-  wg
+  wg || true
 
-# 4. Миграция: удаляем старый wg0.conf
+# ------------------------------
+# 4. Миграция старых конфигов
+# ------------------------------
 rm -f ~/.wg-easy/wg*.conf 2>/dev/null || true
 
+# ------------------------------
 # 5. NAT + forwarding
+# ------------------------------
 EXT_IFACE=$(ip route get 8.8.8.8 | awk 'NR==1 {print $5}')
-sudo iptables -t nat -A POSTROUTING -s 10.42.42.0/24 -o "$EXT_IFACE" -j MASQUERADE
-sudo ip6tables -t nat -A POSTROUTING -s fdcc:ad94:bacf:61a3::/64 -o "$EXT_IFACE" -j MASQUERADE
+WG_SUBNET="10.42.42.0/24"
+WG_SUBNET6="fdcc:ad94:bacf:61a3::/64"
 
-# 6. Запуск wg-easy (официальная команда + фиксы)
+# IPv4 NAT
+sudo iptables -t nat -C POSTROUTING -s $WG_SUBNET -o "$EXT_IFACE" -j MASQUERADE 2>/dev/null || \
+sudo iptables -t nat -A POSTROUTING -s $WG_SUBNET -o "$EXT_IFACE" -j MASQUERADE
+
+# IPv6 NAT
+sudo ip6tables -t nat -C POSTROUTING -s $WG_SUBNET6 -o "$EXT_IFACE" -j MASQUERADE 2>/dev/null || \
+sudo ip6tables -t nat -A POSTROUTING -s $WG_SUBNET6 -o "$EXT_IFACE" -j MASQUERADE
+
+# Включаем форвардинг
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo sysctl -w net.ipv6.conf.all.forwarding=1
+
+# ------------------------------
+# 6. Запуск контейнера wg-easy
+# ------------------------------
+WG_HOST=$(curl -s ifconfig.co)
+
 docker run -d \
   --name wg-easy \
   --net wg \
@@ -32,7 +58,7 @@ docker run -d \
   --ip6 fdcc:ad94:bacf:61a3::2a \
   -e INSECURE=true \
   -e LANG=ru_RU.UTF-8 \
-  -e WG_HOST=$(curl -s ifconfig.co) \
+  -e WG_HOST=$WG_HOST \
   -e PASSWORD=admin123 \
   -v ~/.wg-easy:/etc/wireguard \
   -v /lib/modules:/lib/modules:ro \
@@ -48,6 +74,9 @@ docker run -d \
   --restart unless-stopped \
   ghcr.io/wg-easy/wg-easy:15
 
-echo "Готово!"
-echo "Web UI: http://$(curl -s ifconfig.co):51821"
+# ------------------------------
+# 7. Вывод информации
+# ------------------------------
+echo "✅ wg-easy успешно запущен!"
+echo "Web UI: http://$WG_HOST:51821"
 echo "Логин: admin | Пароль: admin123"
